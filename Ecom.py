@@ -86,16 +86,18 @@ def consolidate_klog_sequences(df):
                     if (next_row['type'] in ['category', 'item'] and 
                         is_completion_of_sequence(klog_sequence, next_row)):
                         # Use the category/item name as the final product name
-                        final_product = {
-                            'token': token,
-                            'product_name': clean_product_name(next_row['text']),
-                            'search_timestamp': start_time,
-                            'final_timestamp': next_row['start_ts'],
-                            'search_type': 'klog_sequence',
-                            'sequence_length': len(klog_sequence),
-                            'added_to_cart': False
-                        }
-                        consolidated_products.append(final_product)
+                        clean_name = clean_product_name(next_row['text'])
+                        if not is_irrelevant_product_name(clean_name):
+                            final_product = {
+                                'token': token,
+                                'product_name': clean_name,
+                                'search_timestamp': start_time,
+                                'final_timestamp': next_row['start_ts'],
+                                'search_type': 'klog_sequence',
+                                'sequence_length': len(klog_sequence),
+                                'added_to_cart': False
+                            }
+                            consolidated_products.append(final_product)
                         i = j + 1  # Skip past this sequence
                         break
                     else:
@@ -104,9 +106,29 @@ def consolidate_klog_sequences(df):
                 # Reached end of data, use longest klog entry as final name
                 if klog_sequence:
                     longest_entry = max(klog_sequence, key=lambda x: len(str(x['text'])))
+                    clean_name = clean_product_name(longest_entry['text'])
+                    if not is_irrelevant_product_name(clean_name):
+                        final_product = {
+                            'token': token,
+                            'product_name': clean_name,
+                            'search_timestamp': start_time,
+                            'final_timestamp': longest_entry['start_ts'],
+                            'search_type': 'klog_sequence',
+                            'sequence_length': len(klog_sequence),
+                            'added_to_cart': False
+                        }
+                        consolidated_products.append(final_product)
+                i = j
+                continue
+            
+            # If no category/item found, use the longest klog entry
+            if j == i + len(klog_sequence):
+                longest_entry = max(klog_sequence, key=lambda x: len(str(x['text'])))
+                clean_name = clean_product_name(longest_entry['text'])
+                if not is_irrelevant_product_name(clean_name):
                     final_product = {
                         'token': token,
-                        'product_name': clean_product_name(longest_entry['text']),
+                        'product_name': clean_name,
                         'search_timestamp': start_time,
                         'final_timestamp': longest_entry['start_ts'],
                         'search_type': 'klog_sequence',
@@ -115,38 +137,24 @@ def consolidate_klog_sequences(df):
                     }
                     consolidated_products.append(final_product)
                 i = j
-                continue
-            
-            # If no category/item found, use the longest klog entry
-            if j == i + len(klog_sequence):
-                longest_entry = max(klog_sequence, key=lambda x: len(str(x['text'])))
-                final_product = {
-                    'token': token,
-                    'product_name': clean_product_name(longest_entry['text']),
-                    'search_timestamp': start_time,
-                    'final_timestamp': longest_entry['start_ts'],
-                    'search_type': 'klog_sequence',
-                    'sequence_length': len(klog_sequence),
-                    'added_to_cart': False
-                }
-                consolidated_products.append(final_product)
-                i = j
         
         elif row['type'] in ['category', 'item']:
             # Standalone category/item searches (not part of klog sequence)
             if ('All Categories' not in str(row['text']) and 
                 'Shopping Cart' not in str(row['text'])):
                 
-                final_product = {
-                    'token': row['token'],
-                    'product_name': clean_product_name(row['text']),
-                    'search_timestamp': row['start_ts'],
-                    'final_timestamp': row['start_ts'],
-                    'search_type': row['type'],
-                    'sequence_length': 1,
-                    'added_to_cart': False
-                }
-                consolidated_products.append(final_product)
+                clean_name = clean_product_name(row['text'])
+                if not is_irrelevant_product_name(clean_name):
+                    final_product = {
+                        'token': row['token'],
+                        'product_name': clean_name,
+                        'search_timestamp': row['start_ts'],
+                        'final_timestamp': row['start_ts'],
+                        'search_type': row['type'],
+                        'sequence_length': 1,
+                        'added_to_cart': False
+                    }
+                    consolidated_products.append(final_product)
             i += 1
         else:
             i += 1
@@ -276,6 +284,54 @@ def get_products_added_to_cart_optimized(df, consolidated_products):
     
     return cart_products
 
+def is_irrelevant_product_name(text):
+    """Check if the product name is irrelevant (IMEI, random codes, etc.)."""
+    text = str(text).strip()
+    
+    # Skip empty or very short text
+    if len(text) < 3:
+        return True
+    
+    # Check for IMEI patterns (15 digits)
+    if re.match(r'^\d{15}$', text):
+        return True
+    
+    # Check for long numeric sequences (likely IMEI or similar)
+    if re.match(r'^\d{10,}$', text):
+        return True
+    
+    # Check for random alphanumeric codes (like SV6B-8MDTMG-4J5)
+    if re.match(r'^[A-Z0-9]{2,4}-[A-Z0-9]{2,8}-[A-Z0-9]{1,4}$', text):
+        return True
+    
+    # Check for patterns with mostly numbers and few letters
+    if len(re.findall(r'\d', text)) > len(text) * 0.7:
+        return True
+    
+    # Check for common irrelevant phrases
+    irrelevant_phrases = [
+        'enter imei number',
+        'imei',
+        'serial number',
+        'device id',
+        'model number',
+        'part number',
+        'sku',
+        'barcode',
+        'Search or ask a question'
+    ]
+    
+    text_lower = text.lower()
+    for phrase in irrelevant_phrases:
+        if phrase in text_lower:
+            return True
+    
+    # Check for very short random codes (less than 3 characters with numbers)
+    if len(text) <= 3 and re.search(r'\d', text):
+        return True
+    
+    return False
+
 def clean_product_name(text):
     """Extracts clean product name from Amazon text."""
     text = str(text)
@@ -294,10 +350,22 @@ def clean_product_name(text):
 def process_data():
     """Main function to fetch and process data."""
     query = """
-    SELECT token, text, start_ts, toDate(start_ts) AS log_date, type
-    FROM app_log
-    WHERE package = 'in.amazon.mshop.android.shopping'
-    ORDER BY start_ts
+    SELECT 
+    token, 
+    text, 
+    start_ts, 
+    toDate(start_ts) AS log_date, 
+    type
+FROM app_log
+WHERE package = 'in.amazon.mshop.android.shopping'
+  AND text NOT IN (
+      'Search or ask a question',
+      'Search Products for Crazy Low Prices',
+      'Search Amazon.in','Search Amazon Pay',
+      'Search orders'
+  )
+ORDER BY start_ts
+
     """
 
     with st.spinner("Fetching data from API..."):
@@ -464,7 +532,7 @@ def main():
                 # Display the table
                 st.dataframe(
                     display_df_formatted[columns_to_show],
-                    use_container_width=True,
+                    width='stretch',
                     height=400
                 )
                 
@@ -497,7 +565,7 @@ def main():
                             labels={'x': 'Search Count', 'y': 'Product Name'}
                         )
                         fig_products.update_layout(height=400)
-                        st.plotly_chart(fig_products, use_container_width=True)
+                        st.plotly_chart(fig_products, width='stretch')
                 
                 with col2:
                     # Search type distribution
@@ -508,7 +576,7 @@ def main():
                         title="Search Type Distribution"
                     )
                     fig_types.update_layout(height=400)
-                    st.plotly_chart(fig_types, use_container_width=True)
+                    st.plotly_chart(fig_types, width='stretch')
                 
                 # Time series analysis
                 st.subheader("Search Activity Over Time")
@@ -522,7 +590,7 @@ def main():
                     title="Daily Search Activity",
                     labels={'count': 'Number of Searches', 'date': 'Date'}
                 )
-                st.plotly_chart(fig_timeline, use_container_width=True)
+                st.plotly_chart(fig_timeline, width='stretch')
         
         with tab3:
             st.subheader("Cart Analysis")
@@ -543,7 +611,7 @@ def main():
                         labels={'x': 'Cart Additions', 'y': 'Product Name'}
                     )
                     fig_cart.update_layout(height=400)
-                    st.plotly_chart(fig_cart, use_container_width=True)
+                    st.plotly_chart(fig_cart, width='stretch')
                 
                 with col2:
                     # Conversion by search type
@@ -562,13 +630,13 @@ def main():
                         labels={'x': 'Search Type', 'y': 'Conversion Rate (%)'}
                     )
                     fig_conversion.update_layout(height=400)
-                    st.plotly_chart(fig_conversion, use_container_width=True)
+                    st.plotly_chart(fig_conversion, width='stretch')
                 
                 # Cart products table
                 st.subheader("Products Added to Cart")
                 cart_display = cart_df[['token', 'product_name', 'search_timestamp', 'search_type']].copy()
                 cart_display['search_timestamp'] = cart_display['search_timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
-                st.dataframe(cart_display, use_container_width=True)
+                st.dataframe(cart_display, width='stretch')
             else:
                 st.info("No products were added to cart with the current filters.")
         
@@ -601,22 +669,28 @@ def main():
                         labels={'x': 'Total Searches', 'y': 'User Token'}
                     )
                     fig_users.update_layout(height=400)
-                    st.plotly_chart(fig_users, use_container_width=True)
+                    st.plotly_chart(fig_users, width='stretch')
                 
                 with col2:
                     # User conversion rates
                     users_with_conversions = user_summary[user_summary['Cart_Additions'] > 0]
                     if not users_with_conversions.empty:
+                        # Reset index to make token available for plotting
+                        users_with_conversions_reset = users_with_conversions.reset_index()
+                        
                         fig_user_conversion = px.scatter(
-                            users_with_conversions,
+                            users_with_conversions_reset,
                             x='Total_Searches',
                             y='Conversion_Rate',
                             size='Cart_Additions',
+                            hover_data=['token', 'Cart_Additions'],
+                            text='token',
                             title="User Conversion Analysis",
                             labels={'Total_Searches': 'Total Searches', 'Conversion_Rate': 'Conversion Rate (%)'}
                         )
+                        fig_user_conversion.update_traces(textposition="top center")
                         fig_user_conversion.update_layout(height=400)
-                        st.plotly_chart(fig_user_conversion, use_container_width=True)
+                        st.plotly_chart(fig_user_conversion, width='stretch')
                     else:
                         st.info("No users with cart additions in current filter.")
                 
@@ -625,11 +699,11 @@ def main():
                 user_display = user_summary.copy()
                 user_display['First_Search'] = user_display['First_Search'].dt.strftime('%Y-%m-%d %H:%M:%S')
                 user_display['Last_Search'] = user_display['Last_Search'].dt.strftime('%Y-%m-%d %H:%M:%S')
-                st.dataframe(user_display, use_container_width=True)
+                st.dataframe(user_display, width='stretch')
     
     else:
         st.error("Failed to load data. Please check your connection and try again.")
         st.info("Make sure the API endpoint is accessible and credentials are correct.")
 
 if __name__ == "__main__":
-    main() 
+    main()
